@@ -3,6 +3,8 @@
 var express = require('express');
 var mongo = require('mongodb');
 var mongoose = require('mongoose');
+var bodyParser = require('body-parser');
+var dns = require('dns');
 
 var cors = require('cors');
 
@@ -12,12 +14,20 @@ var app = express();
 var port = process.env.PORT || 3000;
 
 /** this project needs a db !! **/ 
-// mongoose.connect(process.env.DB_URI);
+mongoose.connect(process.env.DB_URI);
+
+var mapperScheme = new mongoose.Schema({
+  url: String,
+  short_url: String
+});
+
+var urlMapper = mongoose.model('urlMapper', mapperScheme);
 
 app.use(cors());
 
 /** this project needs to parse POST bodies **/
 // you should mount the body-parser here
+app.use(bodyParser.urlencoded({ extended: false }));
 
 app.use('/public', express.static(process.cwd() + '/public'));
 
@@ -31,6 +41,86 @@ app.get("/api/hello", function (req, res) {
   res.json({greeting: 'hello API'});
 });
 
+app.post("/api/shorturl/new", function(req, res){
+  var url = req.body.url;
+  var dnsLookup = new Promise(function(reslove, reject){
+    var result = url.replace(/(^\w+:|^)\/\//, "");
+    dns.lookup(result, function(err, addresses, family){
+      if (err) reject(err);
+    });
+  });
+
+  dnsLookup.then(function(){
+    return checkIfExists(url);
+  })
+  .then(function(data){
+    if (data.status){
+      return res.json({ url: url, short_url: data.short_url });
+    } else {
+      var shortUrl = shorterUrl();
+      var urlMapping = new UrlMapping({
+        url: url,
+        short_url: shortUrl
+      });
+      return saveUrlMapping(urlMapping);
+    }
+  })
+  .then(function(original_url){
+    var shortUrl = shortenUrl();
+    return res.join({ url: url, short_url: shortUrl });
+  });
+  dnsLookup.catch(function(reason){
+    return res.join({ error: "invalid URL" });
+  });
+});
+
+app.get("/api/shorturl/:shortUrl", function(req, res) {
+  var redirectPromise = redirectToOriginalUrl(req.params.shortUrl);
+  redirectPromise.then(function(original_url) {
+    return res.redirect(original_url);
+  });
+  redirectPromise.catch(function(reason) {
+    return res.json({ error: "invalid URL" });
+  });
+});
+
+function redirectToOriginalUrl(short_url) {
+  return new Promise(function(resolve, reject) {
+    UrlMapping.findOne({ short_url: short_url }, function(err, doc) {
+      if (err || doc === null) return reject(err);
+      else return resolve(doc.original_url);
+    });
+  });
+}
+
+function checkIfExists(original_url) {
+  return new Promise(function(resolve, reject) {
+    UrlMapping.findOne({ original_url: original_url }, function(err, doc) {
+      if (doc === null || err) resolve({ status: false });
+      else resolve({ status: true, short_url: doc.short_url });
+    });
+  });
+}
+
+function saveUrlMapping(mapping) {
+  return new Promise(function(resolve, reject) {
+    mapping.save(function(err, data) {
+      if (err) return reject(err);
+      else return resolve(null, data);
+    });
+  });
+}
+
+function shortenUrl() {
+  var text = "";
+  var possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+  for (var i = 0; i < 5; i++)
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+
+  return text;
+}
 
 app.listen(port, function () {
   console.log('Node.js listening ...');
